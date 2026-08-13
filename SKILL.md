@@ -1,18 +1,18 @@
 ---
 name: figma-ui-gates
-description: Orchestrate the Figma-driven UI gate sequence G0-G12 for new UI implementation and the shared evidence gates for Figma parity review. Use after dev-flow-ui routes a task to Figma UI work; coordinate Figma REST, Review MCP, DebugBridge, physical-device build/runtime checks, screenshot review, and the final verifier.
+description: Orchestrate the Figma-driven UI gate sequence G0-G12 for new UI implementation. Use from dev-flow's feature route after requirements approval and confirmation to coordinate Figma REST, Review MCP, DebugBridge, physical-device build/runtime checks, screenshot review, and the target project's final verifier.
 ---
 
 # Figma UI Gates
 
-This skill owns the Figma UI gate contract. dev-flow-ui is only the entry router; it must not duplicate the gate procedures below.
+This skill owns the Figma UI gate contract for the new-UI sub-route of `dev-flow feature`. `dev-flow` is the entry router;
+`ui-review` owns existing-screen parity review and must not be folded into this implementation skill.
 
 Use this skill for:
 
-- ui_new: Figma-driven iOS UI implementation or restoration.
-- ui_review: Figma-to-existing-runtime parity review and an explicitly authorized correction loop.
+- feature with new UI: Figma-driven iOS UI implementation or restoration.
 
-The normal ui_new sequence is:
+The normal feature/new-UI sequence is:
 
 ~~~text
 preflight
@@ -23,6 +23,7 @@ preflight
 → G4 classification/container
 → G5 ordered group sweep
 → G6 asset boundary
+→ G6 binding validation (mechanical)
 → G7 native implementation
 → G7A leaf runtime review / G7B parent rollup review
 → G8 build
@@ -42,9 +43,8 @@ Use these capabilities without duplicating their instructions:
 - orchestrator_mcp: independent structure, detail, runtime, rollup, and final review.
 - DebugBridge: physical-device UI actions, UIWindow/UIView inspection, runtime-anchor lookup, and current-run App logs.
 - XcodeBuildMCP: session_show_defaults followed by build_run_device.
-- scripts/dev-flow-ui-init: create the gate artifact.
-- scripts/dev-flow-ui-verify-gate: validate the completed ui_new gate.
-- scripts/dev-flow-ui-verify-review-gate: validate the completed ui_review gate.
+- target-project artifact initializer: create the gate artifact and record its exact command.
+- target-project final UI verifier: validate the completed gate record and record its exact command/output.
 
 figma-rest-api is the Figma data source. orchestrator_mcp is the reviewer. Neither is replaced by the other.
 
@@ -53,7 +53,7 @@ figma-rest-api is the Figma data source. orchestrator_mcp is the reviewer. Neith
 Before G0, derive a stable workspace from the canonical Figma URL:
 
 ~~~text
-.devflow-ui/by-url/<sanitized-canonical-figma-url>/
+.dev-flow/ui/by-url/<sanitized-canonical-figma-url>/
 ├── manifest.json
 ├── preflight.json
 ├── gates/
@@ -154,14 +154,92 @@ Decide combined asset versus split assets and record 2x/3x evidence.
 
 - A localizable text node is not an asset-collapse candidate.
 - An SF Symbol glyph is icon/asset content, not localizable text.
-- A non-interactive image/vector/icon/Symbol/RECTANGLE minimum unit uses an exported Figma asset and appears in G6.
+- A non-interactive image/vector/icon/Symbol/RECTANGLE minimum unit **must** use an exported Figma asset and appear in G6.
 - A RECTANGLE minimum unit must not be replaced by a native gradient or solid fill.
 - If a rectangle shares bounds with visible parent stroke/dash chrome, the exported asset or equivalent overlay preserves that chrome.
 - Size-critical exported assets use a native control/view whose runtime bounds equal the Figma frame in points; use UIButton for interactive icon/button units rather than resizing bar-item slots.
+- **Never** implement a collapsed visual minimum unit with a custom `UIView` subclass and `draw(_:)`, vector recomposition, or ad-hoc `UIImage(systemName:)` when G6 marks `collapse: true`.
+
+### G6 JSON contract
+
+Write `gates/G6-assets.json` with at least:
+
+~~~json
+{
+  "rules": [
+    "text and interaction remain native",
+    "collapsed non-interactive visual units must use exported assets in runtime",
+    "rectangle/effect chrome is preserved as exported/equivalent overlay"
+  ],
+  "assets": [
+    {
+      "figma_id": "2985:24400",
+      "local_asset": "lovon_checked",
+      "collapse": true,
+      "target_frame": "370x60 pt",
+      "reason": "..."
+    }
+  ],
+  "status": "pass"
+}
+~~~
+
+Required fields per asset row:
+
+- `figma_id`, `collapse`, `reason`
+- When `collapse` is `true`: `local_asset` or `local_assets` is **required**
+- When `collapse` is `false`: native split mapping is required in G5/G7 evidence
+
+Do not write permissive rules such as "may use exported assets" for collapsed units. Collapsed units **must** use exported assets.
+
+### BG + Symbol button asset rule (implementation)
+
+When a Figma **button** subtree collapses to **only background + Symbol** (no separate localizable label, badge text, or extra chrome):
+
+~~~text
+Button INSTANCE / FRAME
+├── BG          (ELLIPSE / RECTANGLE / vector fill — glass circle, etc.)
+└── Symbol      (TEXT with SF Symbol / icon glyph, or icon-only layer)
+~~~
+
+Treat that button as a **single minimum export unit**:
+
+1. **Do not** recompose BG and Symbol as separate native layers (no `UIImageView` + `UILabel`, no ad-hoc `UIImage(systemName:)` unless Figma explicitly keeps them split).
+2. **Export** the whole button frame from Figma REST render as one asset (record export node id, path, and scale in G3 / group evidence).
+3. **Runtime** must use the exported asset on the interactive control (`UIButton` / project button wrapper + `setImage`, etc.) at the Figma frame in points.
+4. **Figma-first on ambiguity:** if code cannot prove the bundle asset is the **same** resource as the Figma export, block G6/G7A — Figma export is authoritative.
+5. Bind the **parent button node** as `collapsed`; child instance anchors are evidence-only, not required runtime leaves.
+
+This rule matches `ui-review` so new implementation and existing-screen parity share one asset-collapse contract.
+
+### G6 binding validation (mechanical)
+
+After G6 is written and **before** G7 source edits, run:
+
+~~~bash
+bash scripts/validate-g6-asset-binding.sh \
+  --workspace <artifact-workspace> \
+  --source-root <target-project-root>
+~~~
+
+The validator checks:
+
+- every `collapse: true` row has `local_asset` / `local_assets`
+- source references each required asset name (no hand-drawn substitute)
+- no `override func draw(` in Swift files that bind collapsed-node anchors
+- runtime detail JSON for each collapsed parent anchor binds `UIImageView` or `UIButton` (or image-bearing control), not a bare custom `UIView` leaf
+
+If validation fails, G6 status stays `blocked` and G7 must not start. Re-run after fixes and record `gates/G6-binding-validation.json`.
 
 ## G7 — Native Implementation
 
-Only after G1-G6 pass may source edits begin. Record source files, exact changes, affected states, native mappings, and runtime anchors.
+Only after G1-G6 **and G6 binding validation** pass may source edits begin. Record source files, exact changes, affected states, native mappings, and runtime anchors.
+
+For collapsed assets:
+
+- use `UIImageView` or `UIButton` + exported asset at the **parent** Figma node anchor
+- set `accessibilityIdentifier` to `figma.<node-id>` on the parent runtime unit
+- do not bind collapsed visuals to child instance anchors as the primary runtime leaf
 
 For non-list pages, reject a plain base controller with a manually positioned vertical stack, nested competing vertical scroll views, fixed Figma artboard-height assumptions, content bypassing the selected scroll container, or a final control not sealed to the content-container bottom.
 
@@ -174,9 +252,15 @@ For every implementation-complete minimum unit:
 1. Query DebugBridge by the exact runtime-anchor/accessibility identifier.
 2. Require exactly one runtime node.
 3. Save runtime detail JSON.
-4. Call Review MCP with the current G2 detail, runtime detail, frame index, anchor, and source evidence.
+4. Call Review MCP with the current G2 detail, runtime detail, frame index, anchor, G6 asset row, and source evidence.
 
-The reviewer checks anchor binding, unique node, type/content mapping, frame position/size, text/font/color, asset evidence, control behavior, native geometry, and frame-index binding as applicable. The verdict must be pass.
+The reviewer checks anchor binding, unique node, type/content mapping, frame position/size, text/font/color, **exported asset usage for collapsed units**, control behavior, native geometry, and frame-index binding as applicable. The verdict must be pass.
+
+For collapsed units, fail G7A when:
+
+- runtime class is a custom `UIView` with hand-drawn content
+- anchor binds a child instance id instead of the collapsed parent id
+- runtime lacks image evidence matching the G6 `local_asset`
 
 Use this deterministic anchor:
 
@@ -225,31 +309,28 @@ When visual parity, exact layout, overlap, clipping, or final UI completion is c
 
 ## G11 — Independent Orchestrator Review MCP
 
-Run a real orchestrator_mcp review after implementation and evidence exist. Provide compact actual content: task summary, changed files, curated diff, gate status, artifact paths under validation, runtime/screenshot results, and known risks.
+Run a real orchestrator_mcp review after implementation and evidence exist. Provide compact actual content: task summary, changed files, curated diff, gate status, artifact paths under validation, runtime/screenshot results, G6 binding validation output, and known risks.
 
 Require a real run id, role, provider/model, verdict, and copied findings. Self-review, main-session, or hand-written reviewer rows are invalid.
 
 ## G12 — Final Verify
 
-Run the project verifier:
+Run the target project's final UI verifier recorded in the gate artifact. If the target project has
+no verifier, mark G12 blocked; a manual summary is not a verifier result.
+
+The verifier must include G6 asset-binding checks or call `validate-g6-asset-binding.sh` internally.
 
 ~~~bash
-scripts/dev-flow-ui-verify-gate <artifact-workspace>/gates/<gate>.md
+<target-project-ui-new-verifier> <artifact-workspace>/gates/<gate>.md
 ~~~
 
-For ui_review, use the review verifier and record comparison scope, device/state coverage, finding severity, fix queue, reviewer result, and verifier result. A failed or blocked-valid verifier is not completion.
-
-## Review Entry
-
-ui_review reuses preflight, G0-G3 evidence, group binding, and runtime anchors. It does not create fake implementation-complete records. It additionally applies:
-
-- Figma-to-existing-runtime binding;
-- the label rule: app-owned UILabel uses SnapKit, numberOfLines = 0, and no fixed-height constraint;
-- runtime extra scan after binding;
-- authorized finding-scoped correction and recheck only.
+`ui_review` is owned entirely by the separate `ui-review` skill (whole-page split, all-unit live
+compare, runtime-extra scan, baseline, authorized repair, live verification, human acceptance, and
+post-fix review). Post-fix Review MCP for that path uses `code-review-workflow` route
+`ui-parity-review`. Do not execute existing-screen parity or repair flow from this skill.
 
 ## Result Contract
 
-Return entry and target, artifact workspace, completed/blocked gate, changed files when source was edited, Review MCP run ids and verdicts, build result, runtime result or exact blocker, screenshot/design result, and final verifier result.
+Return entry and target, artifact workspace, completed/blocked gate, changed files when source was edited, Review MCP run ids and verdicts, G6 binding validation result, build result, runtime result or exact blocker, screenshot/design result, and final verifier result.
 
 Do not claim completion when a required gate is missing, blocked, or has a non-pass reviewer verdict.
