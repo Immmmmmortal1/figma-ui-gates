@@ -82,7 +82,7 @@ Preflight passes only when Figma REST, Review MCP, and DebugBridge all pass. Oth
 
 ## G0 — Scope Lock
 
-Record Figma file key, root node id, original/canonical URL, target screen/state, implementation or review owner, in-scope/out-of-scope states, entry, and artifact workspace. Do not start a sweep with an unresolved root, state, or scope.
+Record Figma file key, root node id, original/canonical URL, target screen/state, implementation or review owner, in-scope/out-of-scope states, entry, and artifact workspace. Also record the Figma file `version` returned by figma-rest-api into `manifest.json` as the scope-lock version; later gates compare the live file version against it to detect design drift. Do not start a sweep with an unresolved root, state, or scope.
 
 ## G1 — Root Figma Group Tree
 
@@ -103,6 +103,37 @@ Call orchestrator_mcp immediately after G1. The reviewer checks root identity, d
 
 G1 passes only with a real run id, role, provider/model, verdict pass, and copied findings. Otherwise stop before G2.
 
+## Minimum Unit Rules (按需加载)
+
+The minimum-unit implementation and acceptance rules live in this skill's `rules/` directory,
+split by `unit_kind`: `text`, `button-text`, `button-image`, `button-text-icon`, `image`, plus
+`screen` for screen-level checks. Each file is **dual-purpose**: implement new UI to that
+standard, and verify acceptance against the same standard. These rules are the single source of
+truth shared with `ui-review`.
+
+Loading is on-demand, driven by what the page actually contains:
+
+- **G2** records each minimum unit's `unit_kind` and writes `rules_used.json` — the deduplicated
+  set of `unit_kind` values present on the page.
+- **G7** loads only the `rules/*.md` files named in `rules_used.json` before implementing each
+  minimum unit, and obeys the implementation requirement in each.
+- **G7A** reloads the same batch and checks each unit against the acceptance criteria in its rule
+  file.
+- A `unit_kind` not present on the page (e.g. no button this round) never enters context.
+
+`rules_used.json` schema:
+
+```json
+{
+  "rules_used": ["text", "image"],
+  "producer": "figma-ui-gates",
+  "schema_version": 1
+}
+```
+
+`rules_used` must equal the deduplicated set of `unit_kind` values across every minimum unit on
+the page.
+
 ## G2 — Current Group Detail
 
 Process exactly the first unprocessed direct child in the current parent frame_struct.md. Do not jump to a later sibling.
@@ -110,6 +141,16 @@ Process exactly the first unprocessed direct child in the current parent frame_s
 Record the current parent structure and group line before writing detail JSON. Bind metadata id, source parent, source structure artifact, node type, frame, ownership, hit testing, runtime id, structure kind, effective child count, minimum-unit decision, content kind, text/localization state, asset-collapse eligibility, child artifact, next action, split/implementation counters, pending child ids, runtime artifact, and review verdict.
 
 A minimum unit is a leaf, or a pure non-interactive asset composite explicitly marked asset-collapse-eligible. A composite containing localizable text or interaction must continue splitting.
+
+Every minimum unit records its `unit_kind` — one of `text`, `button-text`, `button-image`,
+`button-text-icon`, `image`. A button is classified by its **content**, not by being a control:
+text only → `button-text`; image/icon only → `button-image`; text + icon → `button-text-icon`.
+An interactive text+icon unit must stay `button-text-icon` (never collapse to one exported
+image); a purely visual image/icon is `image`; a localizable text node is never `image`.
+
+When the page sweep is complete, write `rules_used.json` at the artifact workspace root with the
+deduplicated set of `unit_kind` values across every minimum unit on the page (schema in the
+*Minimum Unit Rules* section above). `rules_used` must equal that deduplicated set exactly.
 
 ### G2 Review MCP
 
@@ -130,6 +171,8 @@ Keep split completion separate from implementation completion:
 
 Derive design evidence from unchanged REST metadata and rendered image. Record styles, text, assets, instance internals, and any design-context limitation. Never claim Figma MCP metadata or design-context calls when REST was used.
 
+After writing G3 evidence, fetch the current Figma file `version` from figma-rest-api and compare it against the scope-lock version recorded in G0. If they differ, mark this gate `blocked` and require re-running scope evaluation before continuing.
+
 ## G4 — Group Classification and Container
 
 Write the complete grouped tree table before implementation. Every root direct child appears with order, parent, id, name, node type, frame, ownership, scope, action, child policy, and status.
@@ -140,11 +183,11 @@ Classify the screen container:
 - non-list vertical content: the project scroll base, such as BaseScrolleController;
 - intentionally fixed/system-owned content: BaseViewController or the required system controller, with evidence and exception rationale.
 
-For non-list pages, record one primary vertical scroll owner, safe-area strategy, bottom-control strategy, content-layout contract, and shortest/tallest/long-content evidence. Unknown ownership blocks implementation.
+For non-list pages, record one primary vertical scroll owner, safe-area strategy, bottom-control strategy, content-layout contract, and shortest/tallest/long-content evidence. Unknown ownership blocks implementation. Before blocking, follow this decision flow: first search the target project for existing similar pages and confirm their container ownership → confirm the existing scroll container/controller to reuse → only when ownership still cannot be determined mark the gate `blocked` with the searched evidence recorded.
 
 ## G5 — Ordered Group Sweep
 
-Process groups top-to-bottom and siblings left-to-right according to the current parent structure. For each group record Figma values, source artifact, ownership, scope, native mapping, asset/text/localization mapping, runtime expectation, runtime anchor, screenshot expectation, split result, and implementation result.
+Process groups top-to-bottom and siblings left-to-right according to the current parent structure. For each group record Figma values, source artifact, ownership, scope, native mapping, asset/text/localization mapping, runtime expectation, runtime anchor, screenshot expectation, split result, and implementation result. Each minimum unit is handled per its `unit_kind` rule in `rules/*.md`.
 
 Do not use a screenshot or intuition as a substitute for current group evidence.
 
@@ -228,12 +271,19 @@ The validator checks:
 - source references each required asset name (no hand-drawn substitute)
 - no `override func draw(` in Swift files that bind collapsed-node anchors
 - runtime detail JSON for each collapsed parent anchor binds `UIImageView` or `UIButton` (or image-bearing control), not a bare custom `UIView` leaf
+- the `UIImageView`/`UIButton` bound to a collapsed anchor has a non-empty image asset (the bundle resource exists and is loaded), or G7A image evidence proves the runtime resource matches the G6 `local_asset`; a bare image-bearing control with no image resource fails validation
 
 If validation fails, G6 status stays `blocked` and G7 must not start. Re-run after fixes and record `gates/G6-binding-validation.json`.
+
+This validator script is provided by the devflow repository. When this SKILL.md contract is updated, sync the matching `validate-g6-asset-binding.sh` implementation in devflow so the two stay in lock-step.
 
 ## G7 — Native Implementation
 
 Only after G1-G6 **and G6 binding validation** pass may source edits begin. Record source files, exact changes, affected states, native mappings, and runtime anchors.
+
+Before implementing any minimum unit, read the `rules/*.md` file named by its `unit_kind` (from
+`rules_used.json`) and obey the *Implementation requirement* in that rule file. Load only the
+rules in `rules_used`; a `unit_kind` not on the page is not loaded.
 
 For collapsed assets:
 
@@ -254,7 +304,7 @@ For every implementation-complete minimum unit:
 3. Save runtime detail JSON.
 4. Call Review MCP with the current G2 detail, runtime detail, frame index, anchor, G6 asset row, and source evidence.
 
-The reviewer checks anchor binding, unique node, type/content mapping, frame position/size, text/font/color, **exported asset usage for collapsed units**, control behavior, native geometry, and frame-index binding as applicable. The verdict must be pass.
+The reviewer checks anchor binding, unique node, type/content mapping, frame position/size (origin/size tolerance ±0.5pt), text/font/color, **exported asset usage for collapsed units**, control behavior, native geometry, and frame-index binding as applicable. Acceptance is checked point-by-point against the criteria in the unit's `rules/*.md` (font ±0.1pt, color per channel 1/255, origin ±0.5pt, image SHA-256 identity chain). The verdict must be pass.
 
 For collapsed units, fail G7A when:
 
@@ -298,6 +348,8 @@ On the wired physical device, use DebugBridge to verify page id, stable runtime 
 
 For Home proof states, use only the production navigation path with -oursProofHomeState <state> and the local /v1/home mock payload path. After proof validation, relaunch without the proof argument.
 
+Optionally verify accessibility: under a Dynamic Type font scale (e.g. 110%) confirm layout integrity and that key controls remain reachable; verify VoiceOver readable labels on key interactive elements. If the target project has no such convention, mark these as optional verification items and record the decision.
+
 ## G10 — Screenshot / Design Review
 
 When visual parity, exact layout, overlap, clipping, or final UI completion is claimed:
@@ -306,6 +358,10 @@ When visual parity, exact layout, overlap, clipping, or final UI completion is c
 - compare the target state on the shortest supported viewport and one taller viewport for adaptive pages;
 - check top layout, bottom reachability, content end, safe area, and fixed-overlay inset;
 - block if the exact target state cannot be launched.
+
+Screenshot acceptance criteria: compare along layout structure, overlap, clipping, and spacing. A pixel-level screenshot similarity of ≥98% counts as pass; below the threshold requires manual review and a recorded decision. Screen-level background and base-layout expectations follow `rules/screen.md`.
+
+Before recording the G10 result, fetch the current Figma file `version` from figma-rest-api and compare it against the scope-lock version recorded in G0. If they differ, mark this gate `blocked` and require re-running scope evaluation before continuing.
 
 ## G11 — Independent Orchestrator Review MCP
 
