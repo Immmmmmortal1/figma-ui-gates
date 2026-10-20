@@ -209,8 +209,9 @@ Image identity and every pairwise-difference assertion use `evidence.imageIdenti
 `assetName` mode, equal names mean the same asset and different names mean different assets; null
 `imageAssetName` is `unobservable`. In `hash` mode, `imageHash` is required during preflight; if the
 field is absent, block with the message that this mode needs a bridge version supporting
-`imageHash`. Run the resolver with `--capabilities <probed-capabilities.json>` after probing so this
-mode is mechanically checked.
+`imageHash`. `imageHash` requires LookDebugBridge >= 0.1.18 (currently recommended: 0.1.18), while
+the capability probe remains the final criterion. Run the resolver with
+`--capabilities <probed-capabilities.json>` after probing so this mode is mechanically checked.
 
 Required behavior:
 

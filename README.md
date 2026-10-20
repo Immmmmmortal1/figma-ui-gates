@@ -1,5 +1,7 @@
 # Figma UI Gates
 
+当前发布版本：`v1.0.1`。版本以 Git tag 为权威。
+
 独立 skill 仓库：负责新 Figma UI 的一次性实现与几何还原验收。完整契约见
 [`SKILL.md`](./SKILL.md)。
 
