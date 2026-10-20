@@ -14,7 +14,8 @@ Inherit **all** `text` criteria (see `text.md`), plus:
 |---|---|
 | hit target | the button must meet the project minimum touch target, anchored at the Figma origin |
 
-Font, font size, color, x/y origin, no hard-coded width/height, `numberOfLines = 0`, and
+Font, font size, DebugBridge `textColor` (`{red,green,blue,alpha}` 0..1 floating-point channels,
+compared after `round(channel*255)`), x/y origin, two-profile anchor stability, `numberOfLines = 0`, and
 localization-safety are checked exactly as `text`. A mismatch on any `text` criterion, or a
 missing/undersized hit target, is a finding.
 
@@ -27,7 +28,6 @@ satisfies the project minimum at the Figma origin.
 
 Apply `text.md` point-by-point, then verify the hit target.
 
-## Evidence normalization (shared with `ui-review`)
+## Evidence normalization
 
-Same text-evidence shape as `text.md`; the hit target is recorded as additional runtime
-evidence. Enforced by `ui-review`'s `validate-ui-review-artifacts.py`.
+Same text-evidence shape as `text.md`; the hit target is recorded as additional runtime evidence.

@@ -12,9 +12,9 @@
 |---|---|---|
 | font | resolved PostScript family/name and weight match Figma | exact |
 | font size | match Figma point size | `±0.1 pt` |
-| color | normalized to extended-sRGB RGBA, each channel | `1/255` per channel |
+| text color | DebugBridge `textColor:{red,green,blue,alpha}` with 0..1 floating-point channels | configured `colorChannel` after `round(channel*255)` |
 | x/y origin | origin in root content coordinate space | `±0.5 pt` |
-| width/height | **no hard-coded size** — Figma w/h is design render, not a size lock | n/a |
+| width/height | preserve the confirmed anchor relationship across two runtime profiles | `±0.5 pt` |
 | line count | `numberOfLines = 0` | n/a |
 | localization | layout survives string expansion/contraction | n/a |
 
@@ -22,27 +22,30 @@ A mismatch on font / size / color / origin is a finding.
 
 ## Implementation requirement (new UI)
 
-Resolve the exact PostScript font, set the point size, apply the extended-sRGB color, place
-the origin, leave `numberOfLines = 0`, and avoid hard-coded width/height. Do not clamp the
-label to the Figma render box.
+Resolve the exact PostScript font, set the point size, apply the text color, place
+the origin, and leave `numberOfLines = 0`. Do not clamp the label to the Figma render box.
 
 ## Acceptance review (verify)
 
 Compare point-by-point: for each dimension record `expected` (Figma) vs `measured` (runtime),
 the tolerance, and the evidence path. A naked "looks equal" is not evidence.
 
-## Evidence normalization (shared with `ui-review`)
+## Evidence normalization
 
 Convert Figma and runtime frames into the target root content coordinate space; record device
 scale, safe-area inset, and root origin. Every `ok` row records measured value, expected value,
 tolerance, and evidence path. The machine-readable text-evidence shape and these tolerance
-limits are enforced mechanically by `ui-review`'s `validate-ui-review-artifacts.py`, so
-new-UI implementation and existing-screen parity share one evidence contract.
+limits are checked by this skill's final verifier and reviewed gate records.
 
 ```text
 text / button-text evidence:
   runtime_path
-  expected|measured: { font_name, font_size, color_rgba, origin }
+  expected|measured: { font_name, font_size, textColor:{red,green,blue,alpha}, origin }
   tolerance: { origin_pt, font_size_pt, color_channel }
-  layout: { number_of_lines, hardcoded_width, hardcoded_height, localization_safe }
+  layout: { number_of_lines, localization_safe, profiles[] }
 ```
+
+Before comparison, normalize every `textColor` 0..1 channel with `round(channel * 255)`; the
+configured tolerance is the resulting 0..255 single-channel delta. `backgroundColor` is not text
+foreground evidence. Image identity is asserted separately with `imageAssetName`; `imageHash` is
+never compared with an exported-file hash.

@@ -1,0 +1,177 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://devskills.local/figma-ui-gates/config.schema.json",
+  "title": "figma-ui-gates resolved configuration",
+  "type": "object",
+  "default": {
+    "artifacts": { "root": ".devflow-ui" },
+    "runtime": { "target": "simulator", "deviceId": null, "bridge": { "baseUrl": "http://127.0.0.1:37777" } },
+    "build": {
+      "command": "xcodebuild {workspace|project} -scheme {scheme} -configuration {configuration} -derivedDataPath {derivedDataPath} -destination {destination} build",
+      "scheme": "", "workspace": null, "project": null, "configuration": "Debug",
+      "derivedDataPath": null, "destination": "platform=iOS Simulator,name=iPhone 16"
+    },
+    "review": {
+      "nodeGate": { "mode": "self" },
+      "finalGate": { "mode": "subagent", "agent": "ui-reviewer" },
+      "requireIndependentNodeGate": false
+    },
+    "evidence": {
+      "mode": "runtime-geometry",
+      "imageIdentity": "assetName",
+      "tolerances": { "origin": 0.5, "size": 0.5, "font": 0.1, "colorChannel": 1, "radius": 0.5 },
+      "profiles": [
+        { "id": "primary", "width": 402, "destination": "platform=iOS Simulator,name=iPhone 16 Pro" },
+        { "id": "secondary", "width": 393, "destination": "platform=iOS Simulator,name=iPhone 16" }
+      ]
+    },
+    "finalVerifier": { "mode": "builtin", "command": "" }
+  },
+  "additionalProperties": false,
+  "required": ["artifacts", "runtime", "build", "review", "evidence", "finalVerifier"],
+  "properties": {
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["root"],
+      "properties": { "root": { "type": "string", "minLength": 1 } }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target", "deviceId", "bridge"],
+      "properties": {
+        "target": { "type": "string", "enum": ["simulator", "device"] },
+        "deviceId": { "type": ["string", "null"] },
+        "bridge": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["baseUrl"],
+          "properties": { "baseUrl": { "type": "string", "format": "uri" } }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "target": { "const": "device" } }, "required": ["target"] },
+          "then": { "properties": { "deviceId": { "type": "string", "minLength": 1 } } }
+        }
+      ]
+    },
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command", "scheme", "workspace", "project", "configuration", "derivedDataPath", "destination"],
+      "properties": {
+        "command": { "type": "string", "minLength": 1 },
+        "scheme": { "type": "string", "minLength": 1 },
+        "workspace": { "type": ["string", "null"] },
+        "project": { "type": ["string", "null"] },
+        "configuration": { "type": "string", "minLength": 1 },
+        "derivedDataPath": { "type": ["string", "null"] },
+        "destination": { "type": "string", "minLength": 1 }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "workspace": { "type": "string", "minLength": 1 },
+            "project": { "type": "null" }
+          }
+        },
+        {
+          "properties": {
+            "workspace": { "type": "null" },
+            "project": { "type": "string", "minLength": 1 }
+          }
+        }
+      ]
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nodeGate", "finalGate", "requireIndependentNodeGate"],
+      "properties": {
+        "nodeGate": { "$ref": "#/definitions/reviewer" },
+        "finalGate": { "$ref": "#/definitions/reviewer" },
+        "requireIndependentNodeGate": { "type": "boolean" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "requireIndependentNodeGate": { "const": true } }, "required": ["requireIndependentNodeGate"] },
+          "then": { "properties": { "nodeGate": { "properties": { "mode": { "enum": ["subagent", "custom"] } } } } }
+        }
+      ]
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "imageIdentity", "tolerances", "profiles"],
+      "properties": {
+        "mode": { "type": "string", "enum": ["runtime-geometry"] },
+        "imageIdentity": { "type": "string", "enum": ["assetName", "hash"], "default": "assetName" },
+        "tolerances": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["origin", "size", "font", "colorChannel", "radius"],
+          "properties": {
+            "origin": { "type": "number", "minimum": 0 },
+            "size": { "type": "number", "minimum": 0 },
+            "font": { "type": "number", "minimum": 0 },
+            "colorChannel": { "type": "integer", "minimum": 0, "maximum": 255 },
+            "radius": { "type": "number", "minimum": 0 }
+          }
+        },
+        "profiles": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "width", "destination"],
+            "properties": {
+              "id": { "type": "string", "minLength": 1 },
+              "width": { "type": "integer", "minimum": 1 },
+              "destination": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
+    "finalVerifier": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "command"],
+      "properties": {
+        "mode": { "type": "string", "enum": ["builtin", "command"] },
+        "command": { "type": "string" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "mode": { "const": "command" } }, "required": ["mode"] },
+          "then": { "properties": { "command": { "type": "string", "minLength": 1 } } }
+        }
+      ]
+    }
+  },
+  "definitions": {
+    "reviewer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "properties": {
+        "mode": { "type": "string", "enum": ["self", "subagent", "custom"] },
+        "agent": { "type": "string", "minLength": 1 },
+        "command": { "type": "string" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "mode": { "const": "subagent" } }, "required": ["mode"] },
+          "then": { "required": ["agent"] }
+        },
+        {
+          "if": { "properties": { "mode": { "const": "custom" } }, "required": ["mode"] },
+          "then": { "required": ["command"], "properties": { "command": { "type": "string", "minLength": 1 } } }
+        }
+      ]
+    }
+  }
+}

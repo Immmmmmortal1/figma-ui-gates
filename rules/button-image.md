@@ -10,14 +10,15 @@
 
 | Dimension | Standard | Tolerance |
 |---|---|---|
-| image identity | SHA-256 identity chain: `runtime node → bundle asset name → Figma source export hash` | exact hash match |
+| image identity | configured `evidence.imageIdentity` field matches expected identity | exact match |
+| images differ | configured identity field differs between nodes declared visually different | inequality in one run |
 | frame origin/size | runtime frame vs Figma frame in points | `±0.5 pt` |
 
-A hash mismatch is a finding. **Figma export is authoritative.**
+An observable identity mismatch, or equal configured identities for nodes required to differ, is a finding.
 
-## Repair on hash mismatch
+## Repair on identity mismatch
 
-When the runtime asset hash differs from the Figma export hash, export the Figma asset and
+When the runtime catalog name differs from the declared asset, export the Figma asset and
 replace the runtime image; do not "adjust" the existing asset.
 
 ## Implementation requirement (new UI)
@@ -28,19 +29,18 @@ wrapper + `setImage`) at the Figma frame in points, and set `accessibilityIdenti
 
 ## Acceptance review (verify)
 
-Verify the SHA-256 chain end-to-end and the frame origin/size against tolerance. Record
-`figma_sha256`, `source_asset_sha256`, `runtime_asset_name`, and expected/measured frame.
+Verify identity through the configured strategy and frame origin/size. Record the selected runtime
+identity, pairwise comparisons, and expected/measured frame.
 
-## Evidence normalization (shared with `ui-review`)
+## Evidence normalization
 
-Hash the original Figma export file and the source asset file before asset-catalog compilation
-using SHA-256. Do not claim a live pixel hash unless DebugBridge explicitly returns bytes and
-the hash algorithm/input are recorded. Machine-readable shape enforced by `ui-review`'s
-`validate-ui-review-artifacts.py`:
+Default `assetName` identity uses DebugBridge `imageAssetName`; null is `unobservable`. `hash` mode
+requires `imageHash`, SHA-256 over decoded RGBA8 pixel bytes in row-major order. Pairwise-difference
+assertions use the same selected strategy.
 
 ```text
 image / button-image evidence:
-  runtime_path, figma_sha256, source_asset_sha256, runtime_asset_name
+  runtime_path, runtime_asset_name, same_run_image_hash
   expected_frame, measured_frame
   tolerance: { origin_pt, size_pt }
 ```

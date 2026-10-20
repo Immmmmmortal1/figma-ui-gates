@@ -10,14 +10,15 @@
 
 | Dimension | Standard | Tolerance |
 |---|---|---|
-| image identity | SHA-256 identity chain: `runtime node → bundle asset name → Figma source export hash` | exact hash match |
+| image identity | configured `evidence.imageIdentity` field matches expected identity | exact match |
+| images differ | configured identity field differs between nodes declared visually different | inequality in one run |
 | frame origin/size | runtime frame vs Figma frame in points | `±0.5 pt` |
 
-A hash mismatch is a finding. **Figma export is authoritative.**
+An observable identity mismatch, or equal configured identities for nodes required to differ, is a finding.
 
-## Repair on hash mismatch
+## Repair on identity mismatch
 
-Export the Figma asset and replace the runtime image; do not "adjust" the existing asset.
+Export the Figma asset and bind its catalog name; do not "adjust" the existing asset.
 
 ## Implementation requirement (new UI)
 
@@ -38,11 +39,12 @@ When G6 marks a non-interactive image/vector/icon/Symbol/RECTANGLE minimum unit
 
 ## Acceptance review (verify)
 
-Verify the SHA-256 chain end-to-end and the frame origin/size against tolerance; for collapsed
+Verify identity using the configured strategy and frame origin/size against tolerance; for collapsed
 units, confirm the runtime class is image-bearing (not a hand-drawn `UIView`) and the asset
 matches the G6 `local_asset`.
 
-## Evidence normalization (shared with `ui-review`)
+## Evidence normalization
 
-Same image-evidence shape and SHA-256 chain as `button-image.md`, enforced by `ui-review`'s
-`validate-ui-review-artifacts.py`.
+Same image-evidence shape as `button-image.md`. Default `assetName` uses `imageAssetName`; null is
+`unobservable`. `hash` requires `imageHash`, defined as SHA-256 over decoded RGBA8 pixel bytes in
+row-major order. All pairwise-difference assertions use the selected strategy.

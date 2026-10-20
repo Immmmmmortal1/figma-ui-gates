@@ -32,7 +32,7 @@ Confirm the live root/content background color matches Figma, and the live conta
 the expected layout (collection-based for list screens; single adaptive-height scroll owner for
 non-list screens). Competing vertical scrollers or ambiguous ownership is a finding.
 
-## Evidence normalization (shared with `ui-review`)
+## Evidence normalization
 
-Screen rows use the generic `runtime_path, expected, measured` evidence shape, enforced by
-`ui-review`'s `validate-ui-review-artifacts.py`.
+Screen rows use the generic `runtime_path, expected, measured` evidence shape. Background color is
+read from DebugBridge `backgroundColor` and checked by this skill's reviewed gate records.

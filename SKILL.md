@@ -1,127 +1,282 @@
 ---
 name: figma-ui-gates
-description: Orchestrate the Figma-driven UI gate sequence G0-G12 for new UI implementation. Use from dev-flow's feature route after requirements approval and confirmation to coordinate Figma REST, Review MCP, DebugBridge, physical-device build/runtime checks, screenshot review, and the target project's final verifier.
+description: Orchestrate the self-contained Figma-driven iOS UI gates G0-G12, including G7A/G7B, with configurable reviewers, runtime geometry evidence, and simulator or device execution.
 ---
 
 # Figma UI Gates
 
-This skill owns the Figma UI gate contract for the new-UI sub-route of `dev-flow feature`. `dev-flow` is the entry router;
-`ui-review` owns existing-screen parity review and must not be folded into this implementation skill.
+## Scope
 
-Use this skill for:
+This skill covers one-time implementation and geometric acceptance of a newly created UI from
+Figma. Business states such as loading, empty, error, retry, offline, and permission are owned by
+the target project's approved requirements and `ui-review`; this skill does not duplicate them,
+and their absence is not by itself a blocker here.
 
-- feature with new UI: Figma-driven iOS UI implementation or restoration.
+Shortest and tallest viewport coverage comes from `evidence.profiles`. Short/long-content coverage
+requires a project data fixture. If none is provided, G9 records `n/a` and the reason; that absence
+alone is not blocked.
 
-The normal feature/new-UI sequence is:
+This skill owns new Figma-driven iOS UI implementation. Existing-screen parity remains owned by
+`ui-review`. `SKILL_DIR` means the directory containing this file; every bundled rule and script is
+resolved relative to it.
 
-~~~text
-preflight
-→ G0 scope
-→ G1 root tree + structure review
-→ G2 current group detail + detail review
-→ G3 REST design evidence
-→ G4 classification/container
-→ G5 ordered group sweep
-→ G6 asset boundary
-→ G6 binding validation (mechanical)
-→ G7 native implementation
-→ G7A leaf runtime review / G7B parent rollup review
-→ G8 build
-→ G9 runtime semantics
-→ G10 screenshot/design review
-→ G11 independent orchestrator review
-→ G12 final verifier
-~~~
+Use this sequence without skipping or reordering:
 
-Do not skip, reorder, or mark a gate passed from a hand-written summary. A failed or blocked gate stops the sequence.
+```text
+preflight → G0 scope → G1 root tree → G2 detail → G3 REST evidence
+→ G4 classification/container → G5 ordered sweep → G6 asset declaration
+→ G7 implementation → G8 build + launch → G6V asset binding validation
+→ G7A unit runtime review → G7B parent rollup review
+→ G9 runtime semantics → G10 geometry parity → G11 final review → G12 final verify
+```
+
+A failed or blocked gate stops the sequence. A gate is not passed by a prose summary.
+
+State chain and verifier order are identical:
+
+| Order | State required before advancing |
+|---|---|
+| preflight, G0, G1, G2, G3, G4, G5, G6, G7, G8 | `pass` in listed order |
+| G6V, G7A, G7B, G9, G10, G11, G12 | `pass` in listed order |
+
+At the first missing, failed, or blocked state, stop; later records cannot compensate for it.
 
 ## Dependencies and ownership
 
-Use these capabilities without duplicating their instructions:
+- `figma-rest-api` is the read-only design data source.
+- A reviewer adapter performs configured node and final reviews: current-agent self review, a child
+  agent, or a custom command.
+- DebugBridge supplies UI actions, UIWindow/UIView hierarchy, runtime nodes, geometry, and current-run
+  App logs.
+- XcodeBuildMCP builds and launches the configured simulator or device target.
+- The resolved `build` configuration supplies the executable build command; this skill provides
+  the default final verifier.
 
-- figma-rest-api: read-only Figma REST data and rendered images.
-- orchestrator_mcp: independent structure, detail, runtime, rollup, and final review.
-- DebugBridge: physical-device UI actions, UIWindow/UIView inspection, runtime-anchor lookup, and current-run App logs.
-- XcodeBuildMCP: session_show_defaults followed by build_run_device.
-- target-project artifact initializer: create the gate artifact and record its exact command.
-- target-project final UI verifier: validate the completed gate record and record its exact command/output.
+## Configuration
 
-figma-rest-api is the Figma data source. orchestrator_mcp is the reviewer. Neither is replaced by the other.
+The optional configuration is `<project>/.devflow-ui/figma-ui-gates.config.json`. First merge the
+optional partial file with built-in defaults by running `scripts/resolve-config.py`; then validate
+the complete result against `${SKILL_DIR}/config.schema.json`.
+
+```json
+{
+  "artifacts": { "root": ".devflow-ui" },
+  "runtime": {
+    "target": "simulator",
+    "deviceId": null,
+    "bridge": { "baseUrl": "http://127.0.0.1:37777" }
+  },
+  "build": {
+    "command": "xcodebuild {workspace|project} -scheme {scheme} -configuration {configuration} -derivedDataPath {derivedDataPath} -destination {destination} build",
+    "scheme": "",
+    "workspace": null,
+    "project": null,
+    "configuration": "Debug",
+    "derivedDataPath": null,
+    "destination": "platform=iOS Simulator,name=iPhone 16"
+  },
+  "review": {
+    "nodeGate": { "mode": "self" },
+    "finalGate": { "mode": "subagent", "agent": "ui-reviewer" },
+    "requireIndependentNodeGate": false
+  },
+  "evidence": {
+    "mode": "runtime-geometry",
+    "imageIdentity": "assetName",
+    "tolerances": {
+      "origin": 0.5,
+      "size": 0.5,
+      "font": 0.1,
+      "colorChannel": 1,
+      "radius": 0.5
+    },
+    "profiles": [
+      { "id": "primary", "width": 402, "destination": "platform=iOS Simulator,name=iPhone 16 Pro" },
+      { "id": "secondary", "width": 393, "destination": "platform=iOS Simulator,name=iPhone 16" }
+    ]
+  },
+  "finalVerifier": { "mode": "builtin", "command": "" }
+}
+```
+
+- `artifacts.root` is project-relative unless absolute and defaults to `.devflow-ui`.
+- `runtime.target` is `simulator | device`, default `simulator`; `runtime.bridge.baseUrl` selects the
+  DebugBridge endpoint. Device mode requires `runtime.deviceId`.
+- `build.command` is a non-empty complete command or template using
+  `{workspace|project}/{scheme}/{configuration}/{derivedDataPath}/{destination}`. The first token
+  resolves to `-workspace <path>` or `-project <path>`. Preflight must resolve it
+  to one executable command; an unresolved or absent command is blocked.
+- `review.nodeGate.mode` is `self | subagent | custom`, default `self` (the current executing agent).
+- `review.finalGate.mode` is `self | subagent | custom`, default `subagent`; its default `agent` is
+  `ui-reviewer`.
+- A reviewer in `custom` mode carries its own non-empty `command`; a reviewer in `subagent` mode
+  carries a non-empty `agent`.
+- If `review.requireIndependentNodeGate` is `true`, `review.nodeGate.mode` must not be `self`.
+- `evidence.mode` only permits `runtime-geometry`. Tolerances are in points except `colorChannel`,
+  which is a single-channel delta after converting both 0...1 runtime values with
+  `round(channel * 255)`.
+- `evidence.imageIdentity` is `assetName | hash`, default `assetName`. `assetName` compares
+  `imageAssetName`; a null value makes that unit's identity assertion `unobservable`. `hash`
+  compares `imageHash` (SHA-256 over decoded RGBA8 bytes in row-major order) and elevates
+  `imageHash` to a preflight requirement.
+- `evidence.profiles` has at least two entries with unique non-empty `id`, unique positive integer
+  `width`, and a destination matching `runtime.target`.
+- `finalVerifier.mode` is `builtin | command`, default `builtin`. `command` is used only for the
+  command mode.
 
 ## Artifact contract
 
-Before G0, derive a stable workspace from the canonical Figma URL:
+Derive the workspace from the canonical design identity:
 
-~~~text
-.dev-flow/ui/by-url/<sanitized-canonical-figma-url>/
+```text
+<configured-artifacts-root>/<fileKey>-<rootNodeId>/
 ├── manifest.json
 ├── preflight.json
 ├── gates/
 ├── figma/
-├── reviews/
 ├── runtime/
-├── lookin/
-└── screenshots/
-~~~
+├── reviews/
+└── assets/
+```
 
-Keep raw REST responses unchanged. Store derived structure, index, detail, runtime, review, and gate artifacts beside them. Generated workflow artifacts are local evidence and must be ignored by the target repository.
+Sanitize path separators in `rootNodeId` without changing the value recorded in `manifest.json`.
+Keep original REST responses unchanged. Workflow artifacts are local evidence and must not be
+committed to the target repository. **Invariant I4:** the artifact directory must be ignored by
+Git; when the source root is a Git repository and the directory is not ignored, preflight is blocked.
 
-Every gate records the original/canonical URL, file key, root node id, artifact workspace, status, evidence paths, reviewer run information when applicable, and an exact blocker/safe next action when blocked.
+Every gate records canonical URL, file key, root node id, workspace, status, evidence paths, and an
+exact blocker/safe next action when blocked. Use these gate record names:
+
+```text
+G0-scope.json, G1-root-tree.json, G2-detail.json, G3-rest-evidence.json,
+G4-classification.json, G5-ordered-sweep.json, G6-assets.json,
+G7-implementation.json, G8-build.json, G6V-binding-validation.json,
+G7A-runtime-review.json, G7B-parent-rollup.json, G9-runtime-semantics.json,
+G10-geometry-parity.json, G11-final-review.json, G12-final-verify.json
+```
+
+## Review record contract
+
+Each reviewed gate writes `reviews/<gate>.json`:
+
+```json
+{
+  "gate": "G2",
+  "reviewer": {
+    "kind": "self|subagent|custom",
+    "id": "<agent role or command>",
+    "model": "<optional>"
+  },
+  "verdict": "pass|fail|blocked",
+  "findings": [
+    { "id": "F1", "severity": "blocking|non-blocking", "message": "..." }
+  ],
+  "parentResults": [
+    { "parentId": "<figma parent id>", "units": ["<unit id>"], "verdict": "pass|fail|blocked" }
+  ],
+  "evidence": ["<path>"],
+  "at": "<ISO8601>"
+}
+```
+
+A reviewed gate passes only when this file exists and `verdict` is `pass`. Reviewer identity is
+recorded; independence is required only when `requireIndependentNodeGate` is true. Each reviewed
+gate produces exactly one `reviews/<gate>.json` for G1, G2, G6, G7A, G7B, G10, and G11. G7A and
+G7B each invoke review once; their one record aggregates all parents in `parentResults`.
+
+## DebugBridge capability contract
+
+Preflight probes both tiers below. A missing required route, field, or behavior writes the exact
+deficiency to `preflight.json`, sets `status: blocked`, and stops before G0. A missing optional
+field does not block, but it must be recorded as unavailable and every affected G10 assertion must
+be `unobservable`.
+
+Required GET routes (4): `/ping`, `/debug/page`, `/debug/windows`, `/debug/runtime/node`.
+
+Required POST routes (2): `/debug/tap`, `/debug/scroll`.
+
+Required node fields are `className`, `accessibilityIdentifier`, `frameInWindow{x,y,width,height}`,
+`bounds`, `hidden`, `alpha`, `cornerRadius`, `rotationDegrees`, `anchorPoint{x,y}`, `gestureCount`,
+`imageSize`, `text`, `fontName`, `fontSize`, and `numberOfLines`.
+
+Optional node fields are `textColor`, `backgroundColor`, `imageAssetName`, and `imageHash`.
+`textColor` and `backgroundColor`, when present, have shape
+`{red,green,blue,alpha}` with every channel a floating-point value in 0...1. Compare colors only
+after converting each channel with `round(channel * 255)`. UILabel/UIButton foreground checks use
+`textColor`; surface checks use `backgroundColor`.
+
+Image identity and every pairwise-difference assertion use `evidence.imageIdentity`. In default
+`assetName` mode, equal names mean the same asset and different names mean different assets; null
+`imageAssetName` is `unobservable`. In `hash` mode, `imageHash` is required during preflight; if the
+field is absent, block with the message that this mode needs a bridge version supporting
+`imageHash`. Run the resolver with `--capabilities <probed-capabilities.json>` after probing so this
+mode is mechanically checked.
+
+Required behavior:
+
+- `/debug/scroll` responds with `contentOffset`, `contentSize`, and
+  `adjustedContentInset{top,left,bottom,right}`.
+- `/debug/tap` accepts optional `repeat` in 1...20 (default 1), returns `repeat` and `invoked`, and
+  reports `success` only when `invoked == repeat`.
+- When G10 evaluates z-order, `/debug/windows` child order is interpreted as z-order. Occlusion is
+  proven only when both nodes share an ancestor, the cover follows the target in that ancestor's
+  child order, and the target `frameInWindow` lies completely inside the cover frame.
+
+Required capabilities are the only observation mechanism for these assertions. Missing a required
+capability is blocked; source inspection cannot replace runtime observation. Missing an optional
+capability is not blocked under the default strategy, but cannot silently pass G10.
 
 ## Preflight Connectivity Gate
 
-Before any Figma sweep, review dispatch, source edit, build, or runtime claim:
+Before design sweep, review, source edit, build, or runtime claim:
 
-1. Run figma_rest.py me.
-2. Run figma_rest.py nodes --url <original-url> --depth 1 and confirm the requested root id.
-3. Call mcp__orchestrator_mcp__orchestrate_effective_config; require a registered stdio session and live PID, then check provider credentials.
-4. Require a wired physical device; call DebugBridge ensure_ports and ping.
-5. If the App is not running, use XcodeBuildMCP session_show_defaults followed by build_run_device, then repeat the DebugBridge checks.
-
-Preflight passes only when Figma REST, Review MCP, and DebugBridge all pass. Otherwise write preflight.json, mark the workflow blocked, and stop before G0.
+1. Run the Figma REST identity request and a depth-1 node request; confirm the root and record the
+   live file version.
+2. Run `python3 "${SKILL_DIR}/scripts/resolve-config.py" [config]`: merge defaults first, then
+   validate. Resolve one executable command from `build` and store it in `preflight.json`; resolver
+   failure (including default empty `build.scheme`) makes preflight blocked. Also verify reviewer
+   adapter availability.
+3. Build/launch only if needed for capability probing, using `runtime.target`.
+4. Probe both DebugBridge capability tiers at `runtime.bridge.baseUrl`. For `imageIdentity=hash`,
+   pass the probe artifact to the resolver and require `imageHash`.
+5. If the target is a Git repository, run `git check-ignore` for the artifact workspace. If it is
+   not ignored, preflight is blocked.
+6. Write `preflight.json` with non-empty `checks[{name,status}]`; every check must pass.
 
 ## G0 — Scope Lock
 
-Record Figma file key, root node id, original/canonical URL, target screen/state, implementation or review owner, in-scope/out-of-scope states, entry, and artifact workspace. Also record the Figma file `version` returned by figma-rest-api into `manifest.json` as the scope-lock version; later gates compare the live file version against it to detect design drift. Do not start a sweep with an unresolved root, state, or scope.
+Record file key, root node id, original/canonical URL, target screen/state, owner, in-scope and
+out-of-scope states, entry, workspace, and Figma file `version` in `manifest.json`. Later gates
+compare the live version against this scope-lock version. Unresolved root, state, or scope blocks.
 
 ## G1 — Root Figma Group Tree
 
-Use figma-rest-api to pull enough root depth to confirm the root and direct children. Save the raw response, then write frame_struct.md and frame_struct_index.json.
+Pull enough root depth to confirm root and direct children. Save the raw response, then write
+`frame_struct.md` and `frame_struct_index.json`. Preserve parent/child structure. Sort direct
+children visually: centerY only determines same-row membership; rows are top-to-bottom; nodes in a
+row use original x left-to-right. Original x/y/w/h remain the only implementation coordinates.
+Never promote nested children to root rows. Bind every index row to parent, source artifact, depth,
+and child artifact.
 
-Preserve parent/child structure. Sort direct children visually:
-
-1. use centerY only to detect same-row nodes;
-2. sort rows by centerY top-to-bottom;
-3. sort nodes in a row by original x left-to-right;
-4. keep original x/y/w/h as the only implementation coordinates.
-
-Do not promote nested children to root rows. The index binds every written row to its parent, structure artifact, depth, and child-structure artifact when applicable.
-
-### G1 Review MCP
-
-Call orchestrator_mcp immediately after G1. The reviewer checks root identity, direct-child completeness, parent/child preservation, visual ordering, original coordinates, and index coverage.
-
-G1 passes only with a real run id, role, provider/model, verdict pass, and copied findings. Otherwise stop before G2.
+Run the configured node reviewer (default self) immediately and write `reviews/G1.json`. It checks
+root identity, direct-child completeness, hierarchy, order, original coordinates, and index
+coverage.
 
 ## Minimum Unit Rules (按需加载)
 
-The minimum-unit implementation and acceptance rules live in this skill's `rules/` directory,
-split by `unit_kind`: `text`, `button-text`, `button-image`, `button-text-icon`, `image`, plus
-`screen` for screen-level checks. Each file is **dual-purpose**: implement new UI to that
-standard, and verify acceptance against the same standard. These rules are the single source of
-truth shared with `ui-review`.
+Rules live in `${SKILL_DIR}/rules/`. Supported `unit_kind` values are `text`, `button-text`,
+`button-image`, `button-text-icon`, `image`, and `shared-component`. Rule files are `text.md`,
+`image.md`, `button-text.md`, `button-image.md`, `button-text-icon.md`, `shared-chrome.md`,
+`corner-radius.md`, `screen.md`, and `layout-anchor.md`. They are dual-purpose implementation and
+acceptance standards.
 
-Loading is on-demand, driven by what the page actually contains:
-
-- **G2** records each minimum unit's `unit_kind` and writes `rules_used.json` — the deduplicated
-  set of `unit_kind` values present on the page.
-- **G7** loads only the `rules/*.md` files named in `rules_used.json` before implementing each
-  minimum unit, and obeys the implementation requirement in each.
-- **G7A** reloads the same batch and checks each unit against the acceptance criteria in its rule
-  file.
-- A `unit_kind` not present on the page (e.g. no button this round) never enters context.
-
-`rules_used.json` schema:
+- G2 records every minimum unit's `unit_kind` and writes the exact deduplicated set to
+  `rules_used.json`.
+- G7/G7A load only mapped files. `shared-component` maps to `shared-chrome.md`; rounded units also
+  load `corner-radius.md`.
+- `${SKILL_DIR}/rules/layout-anchor.md` is always loaded. Its left/right/center/fill semantics,
+  direct-parent judgment, and ambiguous stop rule are mandatory.
+- A kind absent from the page is not loaded.
 
 ```json
 {
@@ -131,262 +286,200 @@ Loading is on-demand, driven by what the page actually contains:
 }
 ```
 
-`rules_used` must equal the deduplicated set of `unit_kind` values across every minimum unit on
-the page.
-
 ## G2 — Current Group Detail
 
-Process exactly the first unprocessed direct child in the current parent frame_struct.md. Do not jump to a later sibling.
+Process exactly the first unprocessed direct child in the current parent structure. Record parent
+and group line, metadata id, source bindings, type, original frame, layout anchor and measured
+margins/offset, ownership, hit testing, runtime id, structure kind, effective child count,
+minimum-unit decision, content kind, localization, asset-collapse eligibility, child artifact,
+next action, split/implementation counters, pending child ids, runtime artifact, and verdict.
 
-Record the current parent structure and group line before writing detail JSON. Bind metadata id, source parent, source structure artifact, node type, frame, ownership, hit testing, runtime id, structure kind, effective child count, minimum-unit decision, content kind, text/localization state, asset-collapse eligibility, child artifact, next action, split/implementation counters, pending child ids, runtime artifact, and review verdict.
+A minimum unit is a leaf or a pure non-interactive asset composite explicitly eligible for
+collapse. Localizable text or interaction forces continued splitting. Classify buttons by content:
+text, image/icon, or text+icon. Interactive text+icon never collapses. A localizable text node is
+never an image.
 
-A minimum unit is a leaf, or a pure non-interactive asset composite explicitly marked asset-collapse-eligible. A composite containing localizable text or interaction must continue splitting.
+Shared chrome and multi-screen component instances use `unit_kind: shared-component` with
+`component_ref`, `variant_props`, and `reuse_evidence`. If missing, first extract one App-level
+shared component; do not create a page-local copy.
 
-Every minimum unit records its `unit_kind` — one of `text`, `button-text`, `button-image`,
-`button-text-icon`, `image`. A button is classified by its **content**, not by being a control:
-text only → `button-text`; image/icon only → `button-image`; text + icon → `button-text-icon`.
-An interactive text+icon unit must stay `button-text-icon` (never collapse to one exported
-image); a purely visual image/icon is `image`; a localizable text node is never `image`.
+An `ambiguous` anchor per `${SKILL_DIR}/rules/layout-anchor.md` is a blocking human question. Record
+measurements and do not advance that node until the confirmed anchor is written back.
 
-When the page sweep is complete, write `rules_used.json` at the artifact workspace root with the
-deduplicated set of `unit_kind` values across every minimum unit on the page (schema in the
-*Minimum Unit Rules* section above). `rules_used` must equal that deduplicated set exactly.
-
-### G2 Review MCP
-
-Call orchestrator_mcp immediately after the current detail is written. The reviewer checks current-parent binding, field completeness/reasonableness, anchor derivation, minimum-unit decision, post-order completion fields, and frame-index binding. A non-pass verdict stops the sequence.
+Run the configured node reviewer and write `reviews/G2.json`. It checks parent/source binding,
+field completeness, anchor derivation, minimum-unit decision, post-order fields, and frame-index
+binding. Ambiguity must stop for human confirmation.
 
 ## Split and Implementation Completion
 
-Keep split completion separate from implementation completion:
-
 - A leaf, collapsed asset, or system-excluded node may be split-complete at its boundary.
-- A non-minimum node is split-complete only when every direct child that must be split is complete.
-- A minimum unit is implementation-complete only after G7A passes.
-- A non-minimum node is implementation-complete only after all direct children are implementation-complete and G7B passes.
-- Parents trust direct-child completion summaries; do not recount grandchildren.
-- Do not begin the next sibling until the current sibling has both statuses complete, or is explicitly blocked.
+- A non-minimum node is split-complete only when every required direct child is complete.
+- A minimum unit becomes implementation-complete only after G7A passes.
+- A non-minimum parent becomes implementation-complete only after direct children complete and
+  G7B passes.
+- Parents trust direct-child summaries and do not recount grandchildren.
+- Do not start the next sibling until the current sibling is complete or explicitly blocked.
 
 ## G3 — REST Design Evidence
 
-Derive design evidence from unchanged REST metadata and rendered image. Record styles, text, assets, instance internals, and any design-context limitation. Never claim Figma MCP metadata or design-context calls when REST was used.
-
-After writing G3 evidence, fetch the current Figma file `version` from figma-rest-api and compare it against the scope-lock version recorded in G0. If they differ, mark this gate `blocked` and require re-running scope evaluation before continuing.
+Derive evidence from unchanged REST metadata and design renders. Record styles, text, assets,
+instance internals, and limitations. Do not claim a different design API. Re-fetch the live Figma
+version; drift from G0 blocks and requires scope reevaluation.
 
 ## G4 — Group Classification and Container
 
-Write the complete grouped tree table before implementation. Every root direct child appears with order, parent, id, name, node type, frame, ownership, scope, action, child policy, and status.
+Write the complete grouped tree table before implementation: order, parent, id, name, type, frame,
+ownership, scope, action, child policy, and status. Shared chrome is not the content container.
 
-Classify the screen container:
+- repeated data: `UITableView` or `UICollectionView` according to project convention;
+- non-list vertical content: the project's scroll base;
+- intentionally fixed/system-owned content: required fixed/system controller with evidence.
 
-- real repeated data: UITableView or UICollectionView;
-- non-list vertical content: the project scroll base, such as BaseScrolleController;
-- intentionally fixed/system-owned content: BaseViewController or the required system controller, with evidence and exception rationale.
-
-For non-list pages, record one primary vertical scroll owner, safe-area strategy, bottom-control strategy, content-layout contract, and shortest/tallest/long-content evidence. Unknown ownership blocks implementation. Before blocking, follow this decision flow: first search the target project for existing similar pages and confirm their container ownership → confirm the existing scroll container/controller to reuse → only when ownership still cannot be determined mark the gate `blocked` with the searched evidence recorded.
+For non-list pages, record one vertical scroll owner, safe-area strategy, bottom-control strategy,
+content-layout contract, and shortest/tallest/long-content evidence. Search existing analogous pages
+before declaring ownership unknown.
 
 ## G5 — Ordered Group Sweep
 
-Process groups top-to-bottom and siblings left-to-right according to the current parent structure. For each group record Figma values, source artifact, ownership, scope, native mapping, asset/text/localization mapping, runtime expectation, runtime anchor, screenshot expectation, split result, and implementation result. Each minimum unit is handled per its `unit_kind` rule in `rules/*.md`.
+Process top-to-bottom and siblings left-to-right. Record design values, source artifact, ownership,
+scope, native mapping, asset/text/localization mapping, runtime expectation and anchor, split result,
+and implementation result. Apply only the matching `${SKILL_DIR}/rules/*.md` files. Runtime geometry
+or intuition cannot replace current design evidence.
 
-Do not use a screenshot or intuition as a substitute for current group evidence.
+## G6 — Asset Declaration
 
-## G6 — Asset Boundary
+Decide combined versus split assets, import selected exports into the target asset directory, and
+record dimensions plus 2x/3x scale evidence. G6 is design-side declaration only: it does not inspect
+source references or runtime nodes.
 
-Decide combined asset versus split assets and record 2x/3x evidence.
+- Localizable text is never collapsed; an SF Symbol glyph is icon content.
+- Non-interactive image/vector/icon/Symbol/RECTANGLE minimum units use exported Figma assets.
+- A RECTANGLE is not replaced by a native gradient or fill; preserve coincident stroke/dash chrome.
+- Size-critical exports use image-bearing views/controls at original point bounds.
+- Shared chrome reuses an App-level component, never a page-private asset.
+- A collapsed visual is not custom-drawn or natively recomposed.
+Write `gates/G6-assets.json`; each row has `figma_id`, `collapse`, and `reason`. A collapsed row
+requires non-empty `local_asset` or `local_assets`, proof that each asset exists in the target asset
+directory, and complete export dimensions/scale; a split row requires native mapping in G5/G7.
+Background+Symbol button subtrees without independent text/badge/chrome collapse as one parent
+export bound to the interactive control. Figma export is authoritative when identity is ambiguous.
 
-- A localizable text node is not an asset-collapse candidate.
-- An SF Symbol glyph is icon/asset content, not localizable text.
-- A non-interactive image/vector/icon/Symbol/RECTANGLE minimum unit **must** use an exported Figma asset and appear in G6.
-- A RECTANGLE minimum unit must not be replaced by a native gradient or solid fill.
-- If a rectangle shares bounds with visible parent stroke/dash chrome, the exported asset or equivalent overlay preserves that chrome.
-- Size-critical exported assets use a native control/view whose runtime bounds equal the Figma frame in points; use UIButton for interactive icon/button units rather than resizing bar-item slots.
-- **Never** implement a collapsed visual minimum unit with a custom `UIView` subclass and `draw(_:)`, vector recomposition, or ad-hoc `UIImage(systemName:)` when G6 marks `collapse: true`.
-
-### G6 JSON contract
-
-Write `gates/G6-assets.json` with at least:
-
-~~~json
-{
-  "rules": [
-    "text and interaction remain native",
-    "collapsed non-interactive visual units must use exported assets in runtime",
-    "rectangle/effect chrome is preserved as exported/equivalent overlay"
-  ],
-  "assets": [
-    {
-      "figma_id": "2985:24400",
-      "local_asset": "lovon_checked",
-      "collapse": true,
-      "target_frame": "370x60 pt",
-      "reason": "..."
-    }
-  ],
-  "status": "pass"
-}
-~~~
-
-Required fields per asset row:
-
-- `figma_id`, `collapse`, `reason`
-- When `collapse` is `true`: `local_asset` or `local_assets` is **required**
-- When `collapse` is `false`: native split mapping is required in G5/G7 evidence
-
-Do not write permissive rules such as "may use exported assets" for collapsed units. Collapsed units **must** use exported assets.
-
-### BG + Symbol button asset rule (implementation)
-
-When a Figma **button** subtree collapses to **only background + Symbol** (no separate localizable label, badge text, or extra chrome):
-
-~~~text
-Button INSTANCE / FRAME
-├── BG          (ELLIPSE / RECTANGLE / vector fill — glass circle, etc.)
-└── Symbol      (TEXT with SF Symbol / icon glyph, or icon-only layer)
-~~~
-
-Treat that button as a **single minimum export unit**:
-
-1. **Do not** recompose BG and Symbol as separate native layers (no `UIImageView` + `UILabel`, no ad-hoc `UIImage(systemName:)` unless Figma explicitly keeps them split).
-2. **Export** the whole button frame from Figma REST render as one asset (record export node id, path, and scale in G3 / group evidence).
-3. **Runtime** must use the exported asset on the interactive control (`UIButton` / project button wrapper + `setImage`, etc.) at the Figma frame in points.
-4. **Figma-first on ambiguity:** if code cannot prove the bundle asset is the **same** resource as the Figma export, block G6/G7A — Figma export is authoritative.
-5. Bind the **parent button node** as `collapsed`; child instance anchors are evidence-only, not required runtime leaves.
-
-This rule matches `ui-review` so new implementation and existing-screen parity share one asset-collapse contract.
-
-### G6 binding validation (mechanical)
-
-After G6 is written and **before** G7 source edits, run:
-
-~~~bash
-bash scripts/validate-g6-asset-binding.sh \
-  --workspace <artifact-workspace> \
-  --source-root <target-project-root>
-~~~
-
-The validator checks:
-
-- every `collapse: true` row has `local_asset` / `local_assets`
-- source references each required asset name (no hand-drawn substitute)
-- no `override func draw(` in Swift files that bind collapsed-node anchors
-- runtime detail JSON for each collapsed parent anchor binds `UIImageView` or `UIButton` (or image-bearing control), not a bare custom `UIView` leaf
-- the `UIImageView`/`UIButton` bound to a collapsed anchor has a non-empty image asset (the bundle resource exists and is loaded), or G7A image evidence proves the runtime resource matches the G6 `local_asset`; a bare image-bearing control with no image resource fails validation
-
-If validation fails, G6 status stays `blocked` and G7 must not start. Re-run after fixes and record `gates/G6-binding-validation.json`.
-
-This validator script is provided by the devflow repository. When this SKILL.md contract is updated, sync the matching `validate-g6-asset-binding.sh` implementation in devflow so the two stay in lock-step.
+Run the configured node reviewer once for G6 and write `reviews/G6.json`.
 
 ## G7 — Native Implementation
 
-Only after G1-G6 **and G6 binding validation** pass may source edits begin. Record source files, exact changes, affected states, native mappings, and runtime anchors.
+Only after G1-G6 pass may source edits begin. Record changed files,
+exact changes, states, native mappings, and runtime anchors. Load mapped rules from
+`${SKILL_DIR}/rules/`, plus required anchor/radius rules. Use original design x/y/w/h; do not adjust
+by visual judgment.
 
-Before implementing any minimum unit, read the `rules/*.md` file named by its `unit_kind` (from
-`rules_used.json`) and obey the *Implementation requirement* in that rule file. Load only the
-rules in `rules_used`; a `unit_kind` not on the page is not loaded.
+Collapsed assets use `UIImageView` or `UIButton` at the parent Figma anchor, with deterministic
+identifier `figma.<node-id>` where every non-alphanumeric scalar becomes `_`. Child instance
+anchors remain evidence-only. Non-list pages use the selected single scroll owner and adaptive
+content contract; reject competing scrollers, fixed artboard-height assumptions, and unsealed final
+controls.
 
-For collapsed assets:
+## G8 — Build and Launch
 
-- use `UIImageView` or `UIButton` + exported asset at the **parent** Figma node anchor
-- set `accessibilityIdentifier` to `figma.<node-id>` on the parent runtime unit
-- do not bind collapsed visuals to child instance anchors as the primary runtime leaf
+Resolve the command from the preflight-approved `build` configuration, execute it for the configured
+`runtime.target`, and launch that artifact. Write `gates/G8-build.json` with the exact command, exit
+code, product path, build id, launch time, and launched App identity. Compilation alone does not prove
+UI parity.
 
-For non-list pages, reject a plain base controller with a manually positioned vertical stack, nested competing vertical scroll views, fixed Figma artboard-height assumptions, content bypassing the selected scroll container, or a final control not sealed to the content-container bottom.
+## G6V — Asset Binding Validation
 
-Adaptive acceptance covers the shortest viewport, a taller viewport, short content, and long/dynamic content. Fixed bottom overlays require safe-area anchoring plus matching scroll/content inset.
+After G8 has launched the implementation, run:
 
-## G7A — Minimum-Unit Runtime Review MCP
+```bash
+bash "${SKILL_DIR}/scripts/validate-g6-asset-binding.sh" \
+  --workspace <artifact-workspace> \
+  --source-root <target-project-root>
+```
 
-For every implementation-complete minimum unit:
+It checks G2/G6 collapse-set equality, declaration types, complete Swift string literals (including
+arrays/constants but not concatenation), absence of custom drawing in anchor-binding files, and
+image-bearing runtime bindings with image evidence. Write `gates/G6V-binding-validation.json`.
 
-1. Query DebugBridge by the exact runtime-anchor/accessibility identifier.
-2. Require exactly one runtime node.
-3. Save runtime detail JSON.
-4. Call Review MCP with the current G2 detail, runtime detail, frame index, anchor, G6 asset row, and source evidence.
+## G7A — Unit Runtime Review
 
-The reviewer checks anchor binding, unique node, type/content mapping, frame position/size (origin/size tolerance ±0.5pt), text/font/color, **exported asset usage for collapsed units**, control behavior, native geometry, and frame-index binding as applicable. Acceptance is checked point-by-point against the criteria in the unit's `rules/*.md` (font ±0.1pt, color per channel 1/255, origin ±0.5pt, image SHA-256 identity chain). The verdict must be pass.
+Using the same launched App instance identified by G8's build id and launch time, query every
+implementation-complete minimum-unit anchor, require exactly one node, and save runtime JSON.
+Perform one configured review total and aggregate every parent into `parentResults` in the single
+`reviews/G7A.json`; also write `gates/G7A-runtime-review.json`. That gate record must copy G8's
+`buildId` and `launchedAt` exactly.
 
-For collapsed units, fail G7A when:
+Compare `frameInWindow`, `bounds`, `rotationDegrees`, `anchorPoint`, `cornerRadius`, `alpha`,
+`imageSize`, `fontName`, and `fontSize`, plus the applicable unit rules and confirmed layout anchor.
+Collapsed units must bind the parent id to an image-bearing control and exported asset. Shared
+chrome must have one repository-wide implementation. Rounded units use effective/capsule geometry.
 
-- runtime class is a custom `UIView` with hand-drawn content
-- anchor binds a child instance id instead of the collapsed parent id
-- runtime lacks image evidence matching the G6 `local_asset`
+## G7B — Parent Rollup Review
 
-Use this deterministic anchor:
-
-~~~swift
-enum FigmaRuntimeAnchor {
-    static func make(from figmaNodeID: String) -> String {
-        var output = "figma."
-        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789")
-        for scalar in figmaNodeID.unicodeScalars {
-            if allowed.contains(scalar) { output.unicodeScalars.append(scalar) }
-            else { output.append("_") }
-        }
-        return output
-    }
-}
-~~~
-
-## G7B — Parent Completion Rollup Review MCP
-
-For every non-minimum parent:
-
-1. Write a rollup JSON containing direct children in current parent order.
-2. Include each child's split status, implementation status, and child review verdicts.
-3. Call Review MCP with the parent detail, child structure, frame index, and rollup JSON.
-
-The reviewer checks direct-child coverage/order, child completion and verdicts, parent counters, completion kind, and frame-index binding. The verdict must be pass.
-
-## G8 — Build
-
-Build the target with XcodeBuildMCP and record a success marker. A compile result alone does not prove UI completion.
+Create ordered direct-child rollups for all non-minimum parents, including split status,
+implementation status, and child verdicts. Perform one configured review total and aggregate all
+parents into `parentResults` in the single `reviews/G7B.json`; also write
+`gates/G7B-parent-rollup.json`. Check coverage, order, completion, counters, completion kind, and
+frame-index binding.
 
 ## G9 — Runtime Semantics
 
-On the wired physical device, use DebugBridge to verify page id, stable runtime anchors, type, label, enabled state, visibility, reachability, and interaction. For scroll pages, identify exactly one primary vertical scroll owner, content container, content/visible heights, and final-control reachability.
+Using DebugBridge, verify page id; anchor uniqueness; node type; text; visibility and alpha;
+enabled/user-interaction state; gesture/control behavior; exactly one vertical scroll owner; scroll
+content/viewport/insets; final-control reachability; and shortest/tallest boundary values from every
+configured profile. Short/long-content values use the project fixture; without one, record `n/a`
+and its reason. Use repeated tap to prove one user action does not duplicate navigation pushes.
 
-For Home proof states, use only the production navigation path with -oursProofHomeState <state> and the local /v1/home mock payload path. After proof validation, relaunch without the proof argument.
+## G10 — Geometry Parity
 
-Optionally verify accessibility: under a Dynamic Type font scale (e.g. 110%) confirm layout integrity and that key controls remain reachable; verify VoiceOver readable labels on key interactive elements. If the target project has no such convention, mark these as optional verification items and record the decision.
+Compare every G2 minimum unit's design values with runtime values using configured tolerances.
+Required checks are origin/size, rotation, anchor point, corner radius, alpha, image size, font
+family/name, font size, color, and z-order. Confirm occlusion with the shared-ancestor children-order
+and full-frame-containment rule. For rounded units assert `cornerRadius <= min(width,height)/2 + 0.5`; when the declared
+radius reaches half the minimum side, require capsule geometry.
 
-## G10 — Screenshot / Design Review
+Container-width behavior requires one separate launch for every configured `evidence.profiles`
+entry. `gates/G10-geometry-parity.json` contains `profiles[]`; each entry has `id`, `width`, and a
+non-empty `units[]` covering every G2 unit. Profile ids and widths are unique, there are at least two
+profiles, and all unit sets equal the G2 set. Require every capture within tolerance. Do not assert
+constraint type or hard-coded width/height from runtime data; instead verify
+that the confirmed anchor relationship remains stable across the two widths.
 
-When visual parity, exact layout, overlap, clipping, or final UI completion is claimed:
+All units within tolerance is pass. Any excess is fail and `gates/G10-geometry-parity.json` must
+contain a `unit / expected / measured / delta` table. Captured-screen evidence, pixel similarity,
+and pixel color sampling are forbidden and cannot be cited as evidence. Run the configured node
+reviewer once and write `reviews/G10.json`. Re-fetch Figma `version`; drift from G0 blocks pending
+scope reevaluation.
 
-- obtain the Figma reference image through figma-rest-api;
-- compare the target state on the shortest supported viewport and one taller viewport for adaptive pages;
-- check top layout, bottom reachability, content end, safe area, and fixed-overlay inset;
-- block if the exact target state cannot be launched.
+If an optional runtime field is unavailable, the affected unit assertion is explicitly
+`unobservable`; it must not be silently recorded as pass. `gates/G10-geometry-parity.json` must
+contain `unobservable[]`, with one matching `{unit, assertion, missingCapability}` entry for every
+unobservable unit assertion. The verifier rejects an unobservable assertion without its matching
+entry (and rejects an unmatched entry). See `LIMITATIONS.md` for all non-mechanical boundaries.
 
-Screenshot acceptance criteria: compare along layout structure, overlap, clipping, and spacing. A pixel-level screenshot similarity of ≥98% counts as pass; below the threshold requires manual review and a recorded decision. Screen-level background and base-layout expectations follow `rules/screen.md`.
+## G11 — Final Review
 
-Before recording the G10 result, fetch the current Figma file `version` from figma-rest-api and compare it against the scope-lock version recorded in G0. If they differ, mark this gate `blocked` and require re-running scope evaluation before continuing.
-
-## G11 — Independent Orchestrator Review MCP
-
-Run a real orchestrator_mcp review after implementation and evidence exist. Provide compact actual content: task summary, changed files, curated diff, gate status, artifact paths under validation, runtime/screenshot results, G6 binding validation output, and known risks.
-
-Require a real run id, role, provider/model, verdict, and copied findings. Self-review, main-session, or hand-written reviewer rows are invalid.
+Run the configured `finalGate` reviewer (default child agent `ui-reviewer`) once and write
+`reviews/G11.json` and `gates/G11-final-review.json`. Provide changed files, gate statuses, runtime
+conclusions, G6V validation output, geometry result, and known risks. The gate passes only on the
+recorded pass verdict.
 
 ## G12 — Final Verify
 
-Run the target project's final UI verifier recorded in the gate artifact. If the target project has
-no verifier, mark G12 blocked; a manual summary is not a verifier result.
+Default mode runs the bundled verifier:
 
-The verifier must include G6 asset-binding checks or call `validate-g6-asset-binding.sh` internally.
+```bash
+bash "${SKILL_DIR}/scripts/verify-gate-record.sh" \
+  --workspace <artifact-workspace> \
+  --source-root <target-project-root>
+```
 
-~~~bash
-<target-project-ui-new-verifier> <artifact-workspace>/gates/<gate>.md
-~~~
-
-`ui_review` is owned entirely by the separate `ui-review` skill (whole-page split, all-unit live
-compare, runtime-extra scan, baseline, authorized repair, live verification, human acceptance, and
-post-fix review). Post-fix Review MCP for that path uses `code-review-workflow` route
-`ui-parity-review`. Do not execute existing-screen parity or repair flow from this skill.
+If `finalVerifier.mode` is `command`, run its configured command instead and record exact command,
+exit code, and output. The bundled verifier checks all prior records and writes
+`gates/G12-final-verify.json`; G12 therefore does not require that output before invocation. A
+project without its own verifier uses the bundled verifier and is not blocked for that reason.
 
 ## Result Contract
 
-Return entry and target, artifact workspace, completed/blocked gate, changed files when source was edited, Review MCP run ids and verdicts, G6 binding validation result, build result, runtime result or exact blocker, screenshot/design result, and final verifier result.
-
-Do not claim completion when a required gate is missing, blocked, or has a non-pass reviewer verdict.
+Return entry/target, workspace, completed or blocked gate, changed files, reviewer identities and
+verdicts, G6V validation, build result, runtime result or blocker, geometry result, and final verifier
+result. Never claim completion while a required gate is missing, blocked, or non-pass.
