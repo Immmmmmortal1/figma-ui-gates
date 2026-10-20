@@ -1,6 +1,6 @@
 # Figma UI Gates
 
-当前发布版本：`v1.0.2`。版本以 Git tag 为权威。
+当前发布版本：`v1.0.3`。版本以 Git tag 为权威。
 
 ## 为什么需要这套门禁
 
@@ -72,10 +72,55 @@ AI 实现 UI 时，如果一次拉取所有节点再实现，节点越多，上�
 必须按以下顺序执行，不得跳过或重排：
 
 ```text
-preflight → G0 → G1 → G2 → G3 → G4 → G5 → G6 → G7 → G8 → G6V → G7A → G7B → G9 → G10 → G11 → G12
+preflight → G0 scope → G1 root tree* → G2 detail* → G3 REST evidence
+→ G4 classification/container → G5 ordered sweep → G6 asset declaration*
+→ G7 implementation → G8 build + launch → G6V asset binding validation
+→ G7A unit runtime review* → G7B parent rollup review*
+→ G9 runtime semantics → G10 geometry parity* → G11 final review* → G12 final verify
 ```
 
+`*` = 需要 review 记录。
+
 任一门禁失败或 blocked 必须停止；文字总结不能代替门禁记录。
+
+### 哪些门禁需要 review
+
+| gate | 审什么 | 默认执行者 | 没有配置 review role 时 |
+|---|---|---|---|
+| G1 | 根节点身份、直接子节点完整性、层级与视觉顺序、原始坐标、索引覆盖 | 当前 agent 自审（`nodeGate.mode = "self"`） | 改为当前 agent 自审即可，配置 `review.nodeGate.mode = "self"` |
+| G2 | 父节点与来源绑定、字段完整性、锚点推导、最小单元判定、后序字段、frame-index 绑定；歧义必须停下确认 | 当前 agent 自审（`nodeGate.mode = "self"`） | 改为当前 agent 自审即可，配置 `review.nodeGate.mode = "self"` |
+| G6 | 资产合并/拆分决策、原因、本地资产存在性、导出尺寸与 2x/3x 倍率，以及拆分项的原生映射 | 当前 agent 自审（`nodeGate.mode = "self"`） | 改为当前 agent 自审即可，配置 `review.nodeGate.mode = "self"` |
+| G7A | 每个最小单元的运行时节点唯一性、frame/bounds、旋转、锚点、圆角、透明度、图片尺寸、字体及适用单元规则 | 当前 agent 自审（`nodeGate.mode = "self"`） | 改为当前 agent 自审即可，配置 `review.nodeGate.mode = "self"` |
+| G7B | 非最小父节点的直接子节点覆盖与顺序、拆分/实现完成状态、计数器、完成类型、frame-index 绑定 | 当前 agent 自审（`nodeGate.mode = "self"`） | 改为当前 agent 自审即可，配置 `review.nodeGate.mode = "self"` |
+| G10 | 几何容差、圆角与 capsule、z-order、字体，并覆盖原点/尺寸、旋转、锚点、透明度、图片尺寸、颜色和跨宽度锚点稳定性 | 当前 agent 自审（`nodeGate.mode = "self"`） | 改为当前 agent 自审即可，配置 `review.nodeGate.mode = "self"` |
+| G11 | 变更文件、全部门禁状态、运行时结论、G6V 资产绑定结果、几何结果和已知风险 | 子 agent `ui-reviewer`（`finalGate.mode = "subagent"`） | 终审也可改为当前 agent 自审，配置 `review.finalGate.mode = "self"` |
+
+执行者不同不会让门禁变成可选：以上每个 gate 的 `reviews/<gate>.json` 仍必须存在且 `verdict = "pass"`。这些记录会被 verifier 机械校验，包括文件、verdict、reviewer 身份、findings、evidence 和时间序，因此不能省略。
+
+### review 的三种执行方式
+
+- `self`（节点审查默认）：当前执行 agent 自己审，记录 `reviewer.kind = "self"`。
+- `subagent`（终审默认）：由指定子 agent 审，例如默认的 `ui-reviewer`，记录 `reviewer.kind = "subagent"`。
+- `custom`：执行自定义命令；只有对应 reviewer 的 `mode = "custom"` 时，其非空 `command` 才生效，记录 `reviewer.kind = "custom"`。
+
+有完整 review role 的机器使用默认配置即可，不需要提供配置：
+
+```json
+{}
+```
+
+没有 review role 的机器可让节点审查和终审都由当前 agent 执行：
+
+```json
+{
+  "review": {
+    "nodeGate": { "mode": "self" },
+    "finalGate": { "mode": "self" }
+  }
+}
+```
+
+门禁强度不变，变的只是谁来做这次审查。`review.requireIndependentNodeGate` 默认是 `false`；只有显式设为 `true`，才强制节点门禁使用独立 reviewer，此时 `nodeGate.mode` 不能是 `self`。
 
 ### 配置解析
 
