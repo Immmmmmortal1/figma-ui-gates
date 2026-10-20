@@ -1,0 +1,4 @@
+interface:
+  display_name: "Figma UI Gates"
+  short_description: "Implement and accept new Figma-driven iOS UI through G0-G12 gates."
+  default_prompt: "Use $figma-ui-gates to implement or accept this new Figma-driven iOS page through the required gates."

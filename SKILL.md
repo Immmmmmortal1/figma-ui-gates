@@ -1,6 +1,8 @@
 ---
 name: figma-ui-gates
-description: Orchestrate the self-contained Figma-driven iOS UI gates G0-G12, including G7A/G7B, with configurable reviewers, runtime geometry evidence, and simulator or device execution.
+description: Use when implementing a new Figma-driven iOS page once or accepting its design restoration through the self-contained G0-G12 gates, including configurable current-agent or child-agent review, runtime geometry evidence, and simulator or device execution. Do not use for parity checks or repairs on an existing page; use ui-review instead.
+metadata:
+  version: 1.0.4
 ---
 
 # Figma UI Gates
